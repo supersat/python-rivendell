@@ -14,7 +14,7 @@ AUDIO_ROOT = os.environ.get('RIVENDELL_AUDIO_ROOT') or '/var/snd'
 
 LOUDNESS_SINGLE_PATTERN = re.compile(r'^\s*(\-?\d+\.\d) LUFS, (\d{6}_\d{3})\.wav$', flags=re.MULTILINE)
 LOUDNESS_GROUP_PATTERN = re.compile(r'^\s*(\-?\d+\.\d) LUFS$')
-
+CUT_NUMBER_PATTERN = re.compile(r'\d+_(\d+)')
 
 
 
@@ -24,6 +24,18 @@ class Cart():
             self.cuts.append(cut)
         else:
             raise TypeError("Must supply Cut object")
+
+    def create_cut(self):
+        maxcutnum = 0
+        for cut in self.cuts:
+            cutnum = CUT_NUMBER_PATTERN.search(cut.cut_name).groups()[0]
+            if cutnum > maxcutnum:
+                maxcutnum = int(cutnum)
+
+        cut_name = '%06d_%03d' % (self.number, maxcutnum + 1)
+        cut = Cut(self._db, cut_name)
+        self.cuts.append(cut)
+        return cut
 
     def get_loudness(self):
         paths = [cut.get_path() for cut in self.cuts]
@@ -48,11 +60,17 @@ class Cart():
             cut_obj = Cut(self._db, cut[0], kwargs=cut)
             self.add_cut(cut_obj)
 
-    def __init__(self, db, number, title=None, artist=None):
+    def set_title(self, title):
+        c = self._db.cursor()
+        c.execute('UPDATE CART SET TITLE = %s WHERE NUMBER = %s', title, self.number)
+
+    def set_artist(self, artist):
+        c = self._db.cursor()
+        c.execute('UPDATE CART SET ARTIST = %s WHERE NUMBER = %s', title, self.number)
+
+    def __init__(self, db, number):
         self._db = db
-        self.number = number
-        self.title=title
-        self.artist=artist
+        self.number = int(number)
 
         self.cuts = []
 
@@ -110,7 +128,7 @@ class Cut():
         return album_pattern.search(lastline).groups()[0]
          
     def get_path(self):
-        return '/var/snd/' + os.path.basename('%s.wav' % (self.cut_name))
+        return AUDIO_ROOT + os.path.basename('%s.wav' % (self.cut_name))
 
     def __init__(self, db, cut_name, **kwargs):
         self._db = db
@@ -151,10 +169,10 @@ class Host():
 
         c = self._db.cursor()
         keys=['cart_number', 'cart_title', 'cart_artist','cut_name', 'cut_description','cut_play_gain'] 
-        print "Got %s cuts." % (c.execute('SELECT CART.number, CART.title, CART.artist, '
+        c.execute('SELECT CART.number, CART.title, CART.artist, '
                   'CUTS.cut_name, CUTS.description, CUTS.play_gain '
                   'FROM CART INNER JOIN CUTS on CART.number = CUTS.cart_number '
-                  'WHERE CART.number = %s;', (number,)), )
+                  'WHERE CART.number = %s;', (number,))
 
         if not c.rowcount:
             raise exc.CartNotInDatabase(number) 
@@ -165,7 +183,27 @@ class Host():
                 cut_obj = Cut(self._db, cut[3], kwargs=values)
                 cart.add_cut(cut_obj)
             return cart
-       
+
+    def create_cart(self, group='MUSIC', type=1):
+        c = self._db.cursor()
+        max_existing = None
+        if c.execute('SELECT max(NUMBER) from CART where GROUP_NAME = %s', group) != 0:
+            max_existing = c.fetchone()[0]
+
+	if c.execute('SELECT DEFAULT_LOW_CART, DEFAULT_HIGH_CART from GROUPS where NAME = %s', group) != 0:
+            (min_cart_id, max_cart_id) = c.fetchone()
+
+	if max_existing is None:
+	    cart_id = min_cart_id
+	else:
+            cart_id = max_existing + 1
+            if cart_id > max_cart_id:
+
+                raise RuntimeError("Out of cart IDs for group %s" % (group))
+
+        #c.execute('INSERT INTO CARTS (NUMBER, TYPE, GROUP_NAME) VALUES(%s, %s, %s)', cart_id, type, group)
+        return Cart(self._db, cart_id)
+
     def load_config(self, path=CONFIG_FILE):
         self.config = ConfigParser.RawConfigParser()
         try:
