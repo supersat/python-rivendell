@@ -14,7 +14,7 @@ AUDIO_ROOT = os.environ.get('RIVENDELL_AUDIO_ROOT') or '/var/snd'
 
 LOUDNESS_SINGLE_PATTERN = re.compile(r'^\s*(\-?\d+\.\d) LUFS, (\d{6}_\d{3})\.wav$', flags=re.MULTILINE)
 LOUDNESS_GROUP_PATTERN = re.compile(r'^\s*(\-?\d+\.\d) LUFS$')
-CUT_NUMBER_PATTERN = re.compile(r'\d+_(\d+)')
+CUT_NUMBER_PATTERN = re.compile(r'(\d+)_(\d+)')
 
 
 
@@ -28,11 +28,15 @@ class Cart():
     def create_cut(self):
         maxcutnum = 0
         for cut in self.cuts:
-            cutnum = CUT_NUMBER_PATTERN.search(cut.cut_name).groups()[0]
+            cutnum = CUT_NUMBER_PATTERN.search(cut.cut_name).groups()[1]
             if cutnum > maxcutnum:
                 maxcutnum = int(cutnum)
 
         cut_name = '%06d_%03d' % (self.number, maxcutnum + 1)
+
+        c = self._db.cursor()
+        c.execute('INSERT INTO CUTS (CUT_NAME, CART_NUMBER, ORIGIN_DATETIME) VALUES(%s, %s, NOW()); COMMIT;',
+                  (cut_name, self.number))
         cut = Cut(self._db, cut_name)
         self.cuts.append(cut)
         return cut
@@ -62,11 +66,11 @@ class Cart():
 
     def set_title(self, title):
         c = self._db.cursor()
-        c.execute('UPDATE CART SET TITLE = %s WHERE NUMBER = %s', title, self.number)
+        c.execute('UPDATE CART SET TITLE = %s WHERE NUMBER = %s; COMMIT;', (title, self.number))
 
     def set_artist(self, artist):
         c = self._db.cursor()
-        c.execute('UPDATE CART SET ARTIST = %s WHERE NUMBER = %s', title, self.number)
+        c.execute('UPDATE CART SET ARTIST = %s WHERE NUMBER = %s; COMMIT;', (artist, self.number))
 
     def __init__(self, db, number):
         self._db = db
@@ -89,6 +93,25 @@ class Cut():
                                     
         c = self._db.cursor()
         c.execute('UPDATE CUTS SET PLAY_GAIN=%s WHERE CUT_NAME=%s; COMMIT;', (gain, self.cut_name))
+
+    def set_length(self, length):
+        c = self._db.cursor()
+        c.execute('UPDATE CUTS SET START_POINT = 0, END_POINT = %s, LENGTH = %s WHERE CUT_NAME = %s; COMMIT;',
+                  (length, length, self.cut_name))
+	c.close()
+	c = self._db.cursor()
+	cart = CUT_NUMBER_PATTERN.search(self.cut_name).groups()[0]
+	print c.execute('SELECT AVG(LENGTH) FROM CUTS WHERE CART_NUMBER = %s', (cart,))
+	avg_len = int(c.fetchone()[0])
+	print avg_len
+	c.close()
+	c = self._db.cursor()
+        c.execute('UPDATE CART SET FORCED_LENGTH = %s, AVERAGE_LENGTH = %s WHERE NUMBER = %s; COMMIT;',
+                  (avg_len, avg_len, cart))
+
+    def set_description(self, desc):
+        c = self._db.cursor()
+        c.execute('UPDATE CUTS SET DESCRIPTION = %s WHERE CUT_NAME = %s', (desc, self.cut_name))
 
     def amplify(self, gain):
         fail = re.compile(r'^sox FAIL .*?$', re.MULTILINE)
@@ -128,7 +151,7 @@ class Cut():
         return album_pattern.search(lastline).groups()[0]
          
     def get_path(self):
-        return AUDIO_ROOT + os.path.basename('%s.wav' % (self.cut_name))
+        return os.path.join(AUDIO_ROOT, '%s.wav' % (self.cut_name))
 
     def __init__(self, db, cut_name, **kwargs):
         self._db = db
@@ -201,7 +224,7 @@ class Host():
 
                 raise RuntimeError("Out of cart IDs for group %s" % (group))
 
-        #c.execute('INSERT INTO CARTS (NUMBER, TYPE, GROUP_NAME) VALUES(%s, %s, %s)', cart_id, type, group)
+        c.execute('INSERT INTO CART (NUMBER, TYPE, GROUP_NAME) VALUES(%s, %s, %s); COMMIT;', (cart_id, type, group))
         return Cart(self._db, cart_id)
 
     def load_config(self, path=CONFIG_FILE):
